@@ -7,7 +7,7 @@ module Heroku
         :expects  => 200,
         :method   => :delete,
         :path     => "/apps/#{app}/domains",
-        :query    => {'domain' => domain}
+        :query    => {'hostname' => domain}
       )
     end
 
@@ -31,7 +31,7 @@ module Heroku
         :expects  => 201,
         :method   => :post,
         :path     => "/apps/#{app}/domains",
-        :query    => {'domain' => domain}
+        :query    => {'hostname' => domain}
       )
     end
 

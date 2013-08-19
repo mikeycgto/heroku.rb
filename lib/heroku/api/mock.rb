@@ -4,11 +4,12 @@ require 'heroku/api/mock/attachments'
 require 'heroku/api/mock/collaborators'
 require 'heroku/api/mock/config_vars'
 require 'heroku/api/mock/domains'
+require 'heroku/api/mock/dynos'
+require 'heroku/api/mock/dyno_types'
 require 'heroku/api/mock/features'
 require 'heroku/api/mock/keys'
 require 'heroku/api/mock/login'
 require 'heroku/api/mock/logs'
-require 'heroku/api/mock/processes'
 require 'heroku/api/mock/releases'
 require 'heroku/api/mock/stacks'
 require 'heroku/api/mock/user'
@@ -73,7 +74,7 @@ module Heroku
       def self.get_mock_addon(mock_data, addon)
         @addons ||= begin
           data = File.read("#{File.dirname(__FILE__)}/mock/cache/get_addons.json")
-          Heroku::API::OkJson.decode(data)
+          MultiJson.decode(data)
         end
         @addons.detect {|addon_data| addon_data['name'] == addon}
       end
@@ -107,7 +108,7 @@ module Heroku
       def self.get_mock_feature(mock_data, feature)
         @features ||= begin
           data = File.read("#{File.dirname(__FILE__)}/mock/cache/get_features.json")
-          Heroku::API::OkJson.decode(data)
+          MultiJson.decode(data)
         end
         @features.detect {|feature_data| feature_data['name'] == feature}
       end
@@ -116,21 +117,9 @@ module Heroku
         mock_data[:keys].detect {|key_data| %r{ #{Regexp.escape(key)}$}.match(key_data['contents'])}
       end
 
-      def self.get_mock_processes(mock_data, app)
+      def self.get_mock_dynos(mock_data, app)
         mock_data[:ps][app].map do |ps|
-
-          elapsed = Time.now.to_i - Time.parse(ps['transitioned_at']).to_i
-          ps['elapsed'] = elapsed
-
-          pretty_elapsed = if elapsed < 60
-            "#{elapsed}s"
-          elsif elapsed < (60 * 60)
-            "#{elapsed / 60}m"
-          else
-            "#{elapsed / 60 / 60}h"
-          end
-          ps['pretty_state'] = "#{ps['state']} for #{pretty_elapsed}"
-
+          ps['elapsed'] = Time.now.to_i - Time.parse(ps['transitioned_at']).to_i
           ps
         end
       end
@@ -138,15 +127,10 @@ module Heroku
       def self.parse_stub_params(params)
         mock_data = nil
 
-        if params[:headers].has_key?('Authorization')
-          api_key = Base64.decode64(params[:headers]['Authorization']).split(':').last
-
-          parsed = params.dup
-          begin # try to JSON decode
-            parsed[:body] &&= Heroku::API::OkJson.decode(parsed[:body])
-          rescue # else leave as is
-          end
-          mock_data = @mock_data[api_key]
+        parsed = params.dup
+        begin # try to JSON decode
+          parsed[:body] &&= MultiJson.decode(parsed[:body])
+        rescue # else leave as is
         end
 
         [parsed, mock_data]

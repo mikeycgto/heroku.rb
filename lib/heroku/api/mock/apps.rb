@@ -17,7 +17,7 @@ module Heroku
           mock_data[:ps].delete(app)
           mock_data[:releases].delete(app)
           {
-            :body   => Heroku::API::OkJson.encode({}),
+            :body   => MultiJson.encode(app_data.merge('updated_at' => timestamp)),
             :status => 200
           }
         end
@@ -27,7 +27,7 @@ module Heroku
       Excon.stub(:expects => 200, :method => :get, :path => '/apps') do |params|
         request_params, mock_data = parse_stub_params(params)
         {
-          :body   => Heroku::API::OkJson.encode(mock_data[:apps]),
+          :body   => MultiJson.encode(mock_data[:apps]),
           :status => 200
         }
       end
@@ -38,7 +38,7 @@ module Heroku
         app, _ = request_params[:captures][:path]
         with_mock_app(mock_data, app) do |app_data|
           {
-            :body   => Heroku::API::OkJson.encode(app_data),
+            :body   => MultiJson.encode(app_data),
             :status => 200
           }
         end
@@ -52,7 +52,7 @@ module Heroku
         with_mock_app(mock_data, app) do
           maintenance = mock_data[:maintenance_mode].include?(app)
           {
-            :body   => Heroku::API::OkJson.encode('maintenance' => maintenance),
+            :body   => MultiJson.encode('maintenance' => maintenance),
             :status => 200
           }
         end
@@ -65,7 +65,7 @@ module Heroku
 
         if get_mock_app(mock_data, app)
           {
-            :body => Heroku::API::OkJson.encode('error' => 'Name is already taken'),
+            :body => MultiJson.encode('error' => 'Name is already taken'),
             :status => 422
           }
         else
@@ -73,17 +73,17 @@ module Heroku
           app_data = {
             'created_at'          => timestamp,
             'create_status'       => 'complete',
-            'id'                  => rand(99999),
-            'name'                => app,
-            'owner_email'         => 'email@example.com',
-            'slug_size'           => nil,
-            'stack'               => stack,
-            'tier'                => "legacy",
-            'requested_stack'     => nil,
+            'dynos'               => 0,
             'git_url'             => "git@heroku.com:#{app}.git",
+            'id'                  => "app#{rand(99999)}@heroku.com",
+            'name'                => app,
+            'owner_id'            => '123456@users.heroku.com',
             'repo_migrate_status' => 'complete',
             'repo_size'           => nil,
-            'dynos'               => 0,
+            'requested_stack'     => nil,
+            'slug_size'           => nil,
+            'stack'               => stack,
+            'updated_at'          => timestamp,
             'web_url'             => "http://#{app}.herokuapp.com/",
             'workers'             => 0
           }
@@ -100,24 +100,23 @@ module Heroku
           mock_data[:domains][app] = []
           mock_data[:ps][app] = [{
             'action'          => 'up',
-            'app_name'        => app,
+            'app'             => { 'id' => app_data['id'] },
             'attached'        => false,
             'command'         => nil, # set by stack below
             'elapsed'         => 0,
-            'pretty_state'    => 'created for 0s',
-            'process'         => 'web.1',
+            'name'            => 'web.1',
             'rendezvous_url'  => nil,
             'slug'            => 'NONE',
             'state'           => 'created',
             'transitioned_at' => app_data['created_at'],
-            'type'            => nil, # set by stack below
+            'type'            => { 'name' => nil }, # set by stack below
             'upid'            => rand(99999999).to_s
           }]
           mock_data[:releases][app] = []
 
           if stack == 'cedar'
             mock_data[:ps][app].first['command'] = 'bundle exec thin start -p $PORT'
-            mock_data[:ps][app].first['type'] = 'Ps'
+            mock_data[:ps][app].first['type']['name'] = 'Ps'
           else
             add_mock_app_addon(mock_data, app, 'shared-database:5mb')
             mock_data[:config_vars][app] = {
@@ -125,12 +124,12 @@ module Heroku
               'LANG' => 'en_US.UTF-8',
               'RACK_ENV' => 'production'
             }
-            mock_data[:ps][app].first['command']  = 'thin -p $PORT -e $RACK_ENV -R $HEROKU_RACK start'
-            mock_data[:ps][app].first['type']     = 'Dyno'
+            mock_data[:ps][app].first['command']      = 'thin -p $PORT -e $RACK_ENV -R $HEROKU_RACK start'
+            mock_data[:ps][app].first['type']['name'] = 'web'
           end
 
           {
-            :body   => Heroku::API::OkJson.encode(app_data),
+            :body   => MultiJson.encode(app_data),
             :status => 202
           }
         end
@@ -141,7 +140,7 @@ module Heroku
         request_params, mock_data = parse_stub_params(params)
         app, _ = request_params[:captures][:path].first
 
-        with_mock_app(mock_data, app) do
+        with_mock_app(mock_data, app) do |app_data|
           case request_params[:query]['maintenance_mode']
           when '0'
             mock_data[:maintenance_mode] -= [app]
@@ -150,6 +149,7 @@ module Heroku
           end
 
           {
+            :body   => ' ',
             :status => 200
           }
         end
@@ -170,17 +170,18 @@ module Heroku
           if request_params[:query].has_key?('app[transfer_owner]')
             email = request_params[:query]['app[transfer_owner]']
             if collaborator = get_mock_collaborator(mock_data, app, email)
-              app_data['owner_email'] = email
+              app_data['owner_id'] = "#{email.hash.to_s[-6..-1]}@users.heroku.com"
             end
           end
           if email && !collaborator
             {
-              :body   => Heroku::API::OkJson.encode('error' => 'Only existing collaborators can receive ownership for an app'),
-              :status => 422
+              :body   => MultiJson.encode('error' => 'Only existing collaborators can receive ownership for an app'),
+              :status => 403
             }
           else
+            app_data['updated_at'] = timestamp
             {
-              :body   => Heroku::API::OkJson.encode('name' => app_data['name']),
+              :body   => MultiJson.encode(app_data),
               :status => 200
             }
           end
@@ -194,7 +195,7 @@ module Heroku
 
         with_mock_app(mock_data, app) do |app_data|
           {
-            :body   => Heroku::API::OkJson.encode({}),
+            :body   => MultiJson.encode({}),
             :status => 201
           }
         end

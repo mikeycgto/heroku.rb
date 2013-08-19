@@ -1,5 +1,5 @@
-require "base64"
 require "excon"
+require "multi_json"
 require "securerandom"
 require "uri"
 require "zlib"
@@ -8,8 +8,6 @@ __LIB_DIR__ = File.expand_path(File.join(File.dirname(__FILE__), ".."))
 unless $LOAD_PATH.include?(__LIB_DIR__)
   $LOAD_PATH.unshift(__LIB_DIR__)
 end
-
-require "heroku/api/vendor/okjson"
 
 require "heroku/api/errors"
 require "heroku/api/mock"
@@ -21,6 +19,8 @@ require "heroku/api/attachments"
 require "heroku/api/collaborators"
 require "heroku/api/config_vars"
 require "heroku/api/domains"
+require "heroku/api/dyno_types"
+require "heroku/api/dynos"
 require "heroku/api/features"
 require "heroku/api/keys"
 require "heroku/api/login"
@@ -64,11 +64,26 @@ module Heroku
       end
 
       user_pass = ":#{@api_key}"
-      options[:headers] = HEADERS.merge({
-        'Authorization' => "Basic #{Base64.encode64(user_pass).gsub("\n", '')}",
-      }).merge(options[:headers])
-
+      options = {
+        :headers  => {},
+        :host     => 'api.heroku.com',
+        :nonblock => false,
+        :scheme   => 'https'
+      }.merge(options)
+      options[:headers] = {
+        'Accept'                => 'application/vnd.heroku+json; version=3',
+        'Accept-Encoding'       => 'gzip',
+        #'Accept-Language'       => 'en-US, en;q=0.8',
+        'Authorization'         => "Basic #{[user_pass].pack('m').delete("\r\n")}",
+        'User-Agent'            => "heroku-rb/#{Heroku::API::VERSION}",
+        'X-Ruby-Version'        => RUBY_VERSION,
+        'X-Ruby-Platform'       => RUBY_PLATFORM
+      }.merge(options[:headers])
       @connection = Excon.new("#{options[:scheme]}://#{options[:host]}", options)
+    end
+
+    def deprecate(message)
+      $stderr.puts("DEPRECATION: #{message}")
     end
 
     def request(params, &block)
@@ -102,7 +117,7 @@ module Heroku
       if response.body && !response.body.empty?
         decompress_response!(response)
         begin
-          response.body = Heroku::API::OkJson.decode(response.body)
+          response.body = MultiJson.decode(response.body)
         rescue
           # leave non-JSON body as is
         end
@@ -110,6 +125,28 @@ module Heroku
 
       # reset (non-persistent) connection
       @connection.reset
+
+      # pagination
+      if response.headers['Link']
+        link_headers = {}
+        response.headers['Link'].split(', ').each do |link|
+          url, rel = %r{<([^>]+)>; rel="([^"]+)"}.match(link).captures
+          link_headers[rel] = url
+        end
+        # FIXME: comparing against body size seems brittle, but cuts out a round trip for the last (empty) page
+        if link_headers['next'] && response.body.size == 200
+          query_params = {}
+          link_headers['next'].split('?').last.split('&').each do |pair|
+            key, value = pair.split('=')
+            query_params[key] = value
+          end
+
+          pagination_params = params.dup
+          pagination_params[:query] = (pagination_params[:query] || {}).merge!(query_params)
+          pagination_response = request(pagination_params, &block)
+          response.body += pagination_response.body
+        end
+      end
 
       response
     end
@@ -136,11 +173,18 @@ module Heroku
       end
     end
 
+    def config_vars_params(params)
+      params.inject({}) do |accum, (key, value)|
+        accum["config_vars[#{key}]"] = value
+        accum
+      end
+    end
+
     def escape(string)
       CGI.escape(string).gsub('.', '%2E')
     end
 
-    def ps_options(params)
+    def dynos_params(params)
       if ps_env = params.delete(:ps_env) || params.delete('ps_env')
         ps_env.each do |key, value|
           params["ps_env[#{key}]"] = value
